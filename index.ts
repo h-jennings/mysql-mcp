@@ -14,10 +14,10 @@ import {
   ListToolsRequestSchema,
   ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import mysql, { MysqlError, PoolConnection } from "mysql";
+import mysql, { QueryError, PoolConnection } from "mysql2";
 
 // Type definitions
-type MySQLErrorType = MysqlError | null;
+type MySQLErrorType = QueryError | null;
 
 // Interface definitions
 interface TableMetadata {
@@ -62,10 +62,10 @@ interface QueryLog {
 
 // Enum definitions
 enum SQLOperationType {
-  SELECT = 'SELECT',
-  INSERT = 'INSERT',
-  UPDATE = 'UPDATE',
-  DELETE = 'DELETE'
+  SELECT = "SELECT",
+  INSERT = "INSERT",
+  UPDATE = "UPDATE",
+  DELETE = "DELETE",
 }
 
 // Configuration settings
@@ -86,14 +86,14 @@ const serverConfig = {
     schema: "schema",
   },
   limits: {
-    queryTimeout: 30000,  // Query timeout in milliseconds
-    maxRows: 1000,       // Maximum number of rows to return
-    maxQueryLength: 4096 // Maximum SQL query length
-  }
+    queryTimeout: 30000, // Query timeout in milliseconds
+    maxRows: 1000, // Maximum number of rows to return
+    maxQueryLength: 4096, // Maximum SQL query length
+  },
 };
 
 // Unified query string constants
-const COLUMN_METADATA_QUERY = 
+const COLUMN_METADATA_QUERY =
   "SELECT column_name, data_type FROM information_schema.columns " +
   "WHERE table_schema = DATABASE() AND table_name = ?";
 
@@ -104,13 +104,9 @@ const COLUMN_METADATA_QUERY =
  * @param params Query parameters
  * @returns Promise<T> Query results
  */
-const executeQueryWithConnection = <T>(
-  connection: PoolConnection,
-  sql: string,
-  params: any[] = [],
-): Promise<T> => {
+const executeQueryWithConnection = <T>(connection: PoolConnection, sql: string, params: any[] = []): Promise<T> => {
   return new Promise((resolve, reject) => {
-    connection.query(sql, params, (error: MySQLErrorType, results: any) => {
+    connection.query(sql, params, (error, results: any) => {
       if (error) reject(error);
       else resolve(results);
     });
@@ -122,7 +118,7 @@ const executeQueryWithConnection = <T>(
  */
 const getConnectionFromPool = (pool: mysql.Pool): Promise<PoolConnection> => {
   return new Promise((resolve, reject) => {
-    pool.getConnection((error: MySQLErrorType, connection: PoolConnection) => {
+    pool.getConnection((error, connection: PoolConnection) => {
       if (error) reject(error);
       else resolve(connection);
     });
@@ -134,7 +130,7 @@ const getConnectionFromPool = (pool: mysql.Pool): Promise<PoolConnection> => {
  */
 const startTransaction = (connection: PoolConnection): Promise<void> => {
   return new Promise((resolve, reject) => {
-    connection.beginTransaction((error: MySQLErrorType) => {
+    connection.beginTransaction((error) => {
       if (error) reject(error);
       else resolve();
     });
@@ -168,7 +164,7 @@ function checkQueryLimits(sql: string): SQLSecurityCheck {
   if (sql.length > serverConfig.limits.maxQueryLength) {
     return {
       safe: false,
-      reason: `SQL query length exceeds limit (${serverConfig.limits.maxQueryLength} characters)`
+      reason: `SQL query length exceeds limit (${serverConfig.limits.maxQueryLength} characters)`,
     };
   }
   return { safe: true };
@@ -187,14 +183,14 @@ function checkSQLSecurity(sql: string): SQLSecurityCheck {
     /EXECUTE\s+/i,
     /EXEC\s+/i,
     /INTO\s+OUTFILE/i,
-    /INTO\s+DUMPFILE/i
+    /INTO\s+DUMPFILE/i,
   ];
 
   for (const pattern of dangerousPatterns) {
     if (pattern.test(sql)) {
       return {
         safe: false,
-        reason: 'Potential SQL injection attack detected'
+        reason: "Potential SQL injection attack detected",
       };
     }
   }
@@ -207,10 +203,12 @@ function checkSQLSecurity(sql: string): SQLSecurityCheck {
  */
 async function logQuery(log: QueryLog): Promise<void> {
   // Log can be written to database or file based on requirements
-  console.log(JSON.stringify({
-    type: 'query_log',
-    ...log
-  }));
+  console.log(
+    JSON.stringify({
+      type: "query_log",
+      ...log,
+    }),
+  );
 }
 
 /**
@@ -220,15 +218,15 @@ async function withPerformanceMonitoring<T>(
   operation: SQLOperationType,
   sql: string,
   params: any[],
-  action: () => Promise<T>
+  action: () => Promise<T>,
 ): Promise<T> {
   const startTime = process.hrtime();
-  
+
   try {
     const result = await action();
     const [seconds, nanoseconds] = process.hrtime(startTime);
     const duration = seconds * 1000 + nanoseconds / 1000000; // 轉換為毫秒
-    
+
     await logQuery({
       timestamp: new Date(),
       operation,
@@ -236,14 +234,14 @@ async function withPerformanceMonitoring<T>(
       params,
       duration,
       success: true,
-      affectedRows: (result as any)?.affectedRows
+      affectedRows: (result as any)?.affectedRows,
     });
-    
+
     return result;
   } catch (error) {
     const [seconds, nanoseconds] = process.hrtime(startTime);
     const duration = seconds * 1000 + nanoseconds / 1000000;
-    
+
     await logQuery({
       timestamp: new Date(),
       operation,
@@ -251,9 +249,9 @@ async function withPerformanceMonitoring<T>(
       params,
       duration,
       success: false,
-      error: error instanceof Error ? error.message : '未知錯誤'
+      error: error instanceof Error ? error.message : "未知錯誤",
     });
-    
+
     throw error;
   }
 }
@@ -264,37 +262,37 @@ async function withPerformanceMonitoring<T>(
  */
 async function executeModifyQuery(sql: string, params: any[] = []): Promise<SQLExecuteResult> {
   const connection = await getConnectionFromPool(connectionPool);
-  
+
   // 安全檢查
   const securityCheck = checkSQLSecurity(sql);
   if (!securityCheck.safe) {
     return {
       success: false,
-      message: securityCheck.reason
+      message: securityCheck.reason,
     };
   }
 
   // 取得操作類型
-  const sqlType = sql.trim().split(' ')[0].toUpperCase() as SQLOperationType;
-  
+  const sqlType = sql.trim().split(" ")[0].toUpperCase() as SQLOperationType;
+
   try {
     return await withPerformanceMonitoring(sqlType, sql, params, async () => {
       await startTransaction(connection);
       const result = await executeQueryWithConnection<MySQLQueryResult>(connection, sql, params);
-      await connection.commit();
-      
+      connection.commit();
+
       return {
         success: true,
         affectedRows: result.affectedRows,
         insertId: result.insertId,
-        message: result.message
+        message: result.message,
       };
     });
   } catch (error) {
     await rollbackTransaction(connection);
     return {
       success: false,
-      message: error instanceof Error ? error.message : '未知錯誤'
+      message: error instanceof Error ? error.message : "未知錯誤",
     };
   } finally {
     connection.release();
@@ -369,10 +367,7 @@ mcpServer.setRequestHandler(ReadResourceRequestSchema, async (request) => {
     throw new Error("Invalid resource URI");
   }
 
-  const results = (await executeQuery(
-    COLUMN_METADATA_QUERY,
-    [tableName],
-  )) as ColumnMetadata[];
+  const results = (await executeQuery(COLUMN_METADATA_QUERY, [tableName])) as ColumnMetadata[];
 
   return {
     contents: [
@@ -389,42 +384,44 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "mysql_query",
-      description: "Execute read-only SELECT queries against the MySQL database.\n" +
+      description:
+        "Execute read-only SELECT queries against the MySQL database.\n" +
         "- Maximum query length: 4096 characters\n" +
         "- Maximum result rows: 1000\n" +
         "- Query timeout: 30 seconds",
       inputSchema: {
         type: "object",
         properties: {
-          sql: { 
+          sql: {
             type: "string",
-            description: "SQL SELECT query to execute"
-          }
+            description: "SQL SELECT query to execute",
+          },
         },
-        required: ["sql"]
-      }
+        required: ["sql"],
+      },
     },
     {
       name: "mysql_execute",
-      description: "Execute data modification queries (INSERT/UPDATE/DELETE).\n" +
+      description:
+        "Execute data modification queries (INSERT/UPDATE/DELETE).\n" +
         "- Returns affected rows count and insert ID\n" +
         "- Supports parameterized queries\n" +
         "- Automatic transaction handling",
       inputSchema: {
         type: "object",
         properties: {
-          sql: { 
+          sql: {
             type: "string",
-            description: "SQL statement (INSERT, UPDATE, or DELETE)"
+            description: "SQL statement (INSERT, UPDATE, or DELETE)",
           },
-          params: { 
+          params: {
             type: "array",
             items: { type: "string" },
-            description: "Parameters for the SQL statement"
-          }
+            description: "Parameters for the SQL statement",
+          },
         },
-        required: ["sql"]
-      }
+        required: ["sql"],
+      },
     },
     {
       name: "list_tables",
@@ -432,8 +429,8 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: "object",
         properties: {},
-        required: []
-      }
+        required: [],
+      },
     },
     {
       name: "describe_table",
@@ -443,57 +440,57 @@ mcpServer.setRequestHandler(ListToolsRequestSchema, async () => ({
         properties: {
           table: {
             type: "string",
-            description: "Table name"
-          }
+            description: "Table name",
+          },
         },
-        required: ["table"]
-      }
-    }
-  ]
+        required: ["table"],
+      },
+    },
+  ],
 }));
 
 mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  
+
   switch (name) {
     case "mysql_query":
       return executeReadOnlyQuery(args?.sql as string);
-      
+
     case "mysql_execute": {
       const sql = args?.sql as string;
-      const params = args?.params as any[] || [];
-      
+      const params = (args?.params as any[]) || [];
+
       // 檢查 SQL 類型
-      const sqlType = sql.trim().split(' ')[0].toUpperCase();
+      const sqlType = sql.trim().split(" ")[0].toUpperCase();
       if (sqlType === SQLOperationType.SELECT) {
         throw new Error("請使用 mysql_query 執行查詢操作");
       }
-      
+
       const result = await executeModifyQuery(sql, params);
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(result, null, 2)
-          }
+            text: JSON.stringify(result, null, 2),
+          },
         ],
-        isError: !result.success
+        isError: !result.success,
       };
     }
 
     case "list_tables": {
       const results = await executeQuery<TableMetadata[]>(
-        "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()"
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE()",
       );
-      
+
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(results, null, 2)
-          }
+            text: JSON.stringify(results, null, 2),
+          },
         ],
-        isError: false
+        isError: false,
       };
     }
 
@@ -503,22 +500,19 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
         throw new Error("Table name is required");
       }
 
-      const results = await executeQuery<ColumnMetadata[]>(
-        COLUMN_METADATA_QUERY,
-        [tableName]
-      );
+      const results = await executeQuery<ColumnMetadata[]>(COLUMN_METADATA_QUERY, [tableName]);
 
       return {
         content: [
           {
             type: "text",
-            text: JSON.stringify(results, null, 2)
-          }
+            text: JSON.stringify(results, null, 2),
+          },
         ],
-        isError: false
+        isError: false,
       };
     }
-    
+
     default:
       throw new Error(`未知的工具: ${name}`);
   }
@@ -529,13 +523,13 @@ mcpServer.setRequestHandler(CallToolRequestSchema, async (request) => {
  */
 async function executeQuery<T>(sql: string, params: any[] = []): Promise<T> {
   const connection = await getConnectionFromPool(connectionPool);
-  
+
   // 安全檢查
   const securityCheck = checkSQLSecurity(sql);
   if (!securityCheck.safe) {
     throw new Error(securityCheck.reason);
   }
-  
+
   const limitsCheck = checkQueryLimits(sql);
   if (!limitsCheck.safe) {
     throw new Error(limitsCheck.reason);
@@ -546,7 +540,7 @@ async function executeQuery<T>(sql: string, params: any[] = []): Promise<T> {
       SQLOperationType.SELECT,
       sql,
       params,
-      async () => await executeQueryWithConnection<T>(connection, sql, params)
+      async () => await executeQueryWithConnection<T>(connection, sql, params),
     );
   } finally {
     connection.release();
@@ -562,7 +556,7 @@ async function runServer() {
 const shutdown = async (signal: string) => {
   console.log(`Received ${signal}. Shutting down...`);
   return new Promise<void>((resolve, reject) => {
-    connectionPool.end((err: MySQLErrorType) => {
+    connectionPool.end((err) => {
       if (err) {
         console.error("Error closing pool:", err);
         reject(err);
